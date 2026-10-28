@@ -44,11 +44,15 @@ jobs:
             "$WHATSAPP_AGENT_PLATFORM_API_KEY" "$GEMINI_API_KEY" "$GEMINI_API_KEY" > ~/.hermes/.env
           chmod 600 ~/.hermes/.env
           echo "Checking secret lengths: WA=${#WHATSAPP_AGENT_PLATFORM_API_KEY}, GEMINI=${#GEMINI_API_KEY}"
+          if [ -z "$WHATSAPP_AGENT_PLATFORM_API_KEY" ]; then
+            echo "ERROR: WHATSAPP_AGENT_PLATFORM_API_KEY secret is EMPTY in GitHub Settings -> Secrets and variables -> Actions!"
+            exit 1
+          fi
 
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
           export PATH="$HOME/.local/bin:$PATH"
 
-          yes y | hermes plugins install whatsapp-agent-platform --enable || true
+          hermes plugins install whatsapp-agent-platform --yes-deps --enable || true
           hermes plugins enable whatsapp-agent-platform || true
 
           python3 - << 'PY'
