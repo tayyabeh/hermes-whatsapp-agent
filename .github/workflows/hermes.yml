@@ -1,0 +1,71 @@
+name: Hermes 24-7 WhatsApp Agent
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
+
+concurrency:
+  group: hermes-whatsapp-gateway
+  cancel-in-progress: false
+
+jobs:
+  run-hermes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore Hermes Memory & State Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.hermes/memories
+            ~/.hermes/skills
+            ~/.hermes/sessions
+            ~/.hermes/platforms
+            ~/.hermes/state.db
+          key: hermes-state-${{ github.run_id }}
+          restore-keys: |
+            hermes-state-
+
+      - name: Install Hermes Agent & WhatsApp Plugin
+        run: |
+          sudo apt-get update && sudo apt-get install -y libatomic1 ffmpeg
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
+          export PATH="$HOME/.local/bin:$PATH"
+          hermes plugins install whatsapp-agent-platform --enable
+          hermes config set display.platforms.whatsapp_agent_platform.tool_progress off
+          hermes config set display.platforms.whatsapp_agent_platform.interim_assistant_messages false
+          hermes config set stt.echo_transcripts false
+          hermes config set model.provider gemini
+          hermes config set model.default gemini-2.5-flash
+
+      - name: Run Hermes WhatsApp Gateway (5h 30m cycle)
+        env:
+          WHATSAPP_AGENT_PLATFORM_API_KEY: ${{ secrets.WHATSAPP_AGENT_PLATFORM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p ~/.hermes
+          cat > ~/.hermes/.env <<EOF
+          WHATSAPP_AGENT_PLATFORM_API_KEY=${WHATSAPP_AGENT_PLATFORM_API_KEY}
+          GOOGLE_API_KEY=${GEMINI_API_KEY}
+          GEMINI_API_KEY=${GEMINI_API_KEY}
+          EOF
+          chmod 600 ~/.hermes/.env
+          timeout 330m hermes gateway || true
+
+      - name: Save Hermes Memory & State Cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.hermes/memories
+            ~/.hermes/skills
+            ~/.hermes/sessions
+            ~/.hermes/platforms
+            ~/.hermes/state.db
+          key: hermes-state-${{ github.run_id }}
