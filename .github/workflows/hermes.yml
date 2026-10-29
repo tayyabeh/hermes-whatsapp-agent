@@ -17,8 +17,7 @@ jobs:
     timeout-minutes: 350
     env:
       WHATSAPP_AGENT_PLATFORM_API_KEY: ${{ secrets.WHATSAPP_AGENT_PLATFORM_API_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,12 +39,16 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y libatomic1 ffmpeg
           mkdir -p ~/.hermes
-          printf "WHATSAPP_AGENT_PLATFORM_API_KEY=%s\nGOOGLE_API_KEY=%s\nGEMINI_API_KEY=%s\n" \
-            "$WHATSAPP_AGENT_PLATFORM_API_KEY" "$GEMINI_API_KEY" "$GEMINI_API_KEY" > ~/.hermes/.env
+          printf "WHATSAPP_AGENT_PLATFORM_API_KEY=%s\nGROQ_API_KEY=%s\n" \
+            "$WHATSAPP_AGENT_PLATFORM_API_KEY" "$GROQ_API_KEY" > ~/.hermes/.env
           chmod 600 ~/.hermes/.env
-          echo "Checking secret lengths: WA=${#WHATSAPP_AGENT_PLATFORM_API_KEY}, GEMINI=${#GEMINI_API_KEY}"
+          echo "Checking secret lengths: WA=${#WHATSAPP_AGENT_PLATFORM_API_KEY}, GROQ=${#GROQ_API_KEY}"
           if [ -z "$WHATSAPP_AGENT_PLATFORM_API_KEY" ]; then
-            echo "ERROR: WHATSAPP_AGENT_PLATFORM_API_KEY secret is EMPTY in GitHub Settings -> Secrets and variables -> Actions!"
+            echo "ERROR: WHATSAPP_AGENT_PLATFORM_API_KEY secret is EMPTY!"
+            exit 1
+          fi
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "ERROR: GROQ_API_KEY secret is EMPTY in GitHub Settings -> Secrets and variables -> Actions!"
             exit 1
           fi
 
@@ -71,8 +74,8 @@ jobs:
           cfg.setdefault("platforms", {})
           cfg["platforms"].setdefault("whatsapp_agent_platform", {})["enabled"] = True
           cfg.setdefault("model", {})
-          cfg["model"]["provider"] = "gemini"
-          cfg["model"]["default"] = "gemini-2.5-flash"
+          cfg["model"]["provider"] = "groq"
+          cfg["model"]["default"] = "llama-3.3-70b-versatile"
           cfg.setdefault("display", {}).setdefault("platforms", {}).setdefault("whatsapp_agent_platform", {}).update({
               "tool_progress": "off",
               "interim_assistant_messages": False,
