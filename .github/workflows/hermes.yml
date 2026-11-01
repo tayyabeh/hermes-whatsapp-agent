@@ -45,7 +45,7 @@ jobs:
           restore-keys: |
             hermes-state-
 
-      - name: Install & Configure Hermes Agent (WhatsApp Cloud API + Lean Groq)
+      - name: Install & Configure Hermes Agent + Personal Assistant Suite
         run: |
           sudo apt-get update && sudo apt-get install -y libatomic1 ffmpeg jq
 
@@ -53,8 +53,46 @@ jobs:
           chmod +x /tmp/cloudflared
           sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
 
+          sudo cp pa.py /usr/local/bin/pa
+          sudo chmod +x /usr/local/bin/pa
+
           rm -rf ~/.hermes/platforms/whatsapp_agent_platform ~/.hermes/plugins/whatsapp-agent-platform ~/.hermes/plugins/whatsapp_agent_platform ~/.hermes/sessions
-          mkdir -p ~/.hermes
+          mkdir -p ~/.hermes/memories
+
+          cat > ~/.hermes/memories/USER.md << 'EOF'
+          # Tayyab Profile & Communication Rules
+          - Name: Tayyab Ellahi (21 years old, Karachi, Pakistan, timezone Asia/Karachi UTC+5).
+          - Address him as "tum" (never "aap").
+          - Language: Always reply in natural Roman Urdu (Urdu in Latin script, how Pakistanis text on WhatsApp). Keep common English words in English (task, gym, deadline, expense, reminder, project). Never use Arabic/Nastaliq script.
+          - Tone: Blunt, honest manager — never a cheerleader. No fake praise, no fluff. If a task has rolled over multiple times, call it out plainly.
+          - Formatting: Use single asterisk *bold* for WhatsApp bold, never double **bold**.
+          EOF
+
+          cat > ~/.hermes/memories/MEMORY.md << 'EOF'
+          # Personal Assistant Tracker (`pa` CLI)
+          Always use the `terminal` tool to run `pa` commands before claiming any task, expense, record, learning, or reminder change:
+          - Tasks:
+            - `pa task list` — show pending tasks & rollover counts
+            - `pa task add "<title>"` — add a new task for today
+            - `pa task done "<id_or_title>"` — mark task done
+            - `pa task delete "<id_or_title|all>"` — delete pending task(s)
+          - Expenses (PKR):
+            - `pa expense add <amount> <category> "<description>"` — categories: food, groceries, transport, bills, shopping, health, family, entertainment, other
+            - `pa expense summary` — current month PKR breakdown
+          - Custom Records (weight, mood, water, etc.):
+            - `pa record add <kind> "<value>"`
+            - `pa record list <kind>`
+            - `pa record kinds`
+          - Spaced-Repetition Learnings (resurfaced at 3, 7, 14, 30 days):
+            - `pa learning add "<standalone learning note>"`
+            - `pa learning list`
+          - Timed Reminders & Namaz:
+            - `pa reminder add <HH:MM> "<text>"`
+            - `pa reminder list`
+            - `pa namaz` — today's Karachi prayer times (Aladhan Method 1) + 15-min advance reminders
+            - `pa progress` — completion rate & rollover stats
+            - `pa settings` / `pa settings set <key> <value>` — view or change schedule times (`morning_time` 10:00, `night_time` 03:00, `checkin_times` 13:00/16:00/19:00/22:00/01:00, `weekly_time` Sun 21:00, `resurface_time` 18:00)
+          EOF
 
           printf "GROQ_API_KEY=%s\nOPENAI_API_KEY=%s\nCUSTOM_API_KEY=%s\nOPENAI_BASE_URL=https://api.groq.com/openai/v1\nCUSTOM_BASE_URL=https://api.groq.com/openai/v1\nWHATSAPP_CLOUD_PHONE_NUMBER_ID=%s\nWHATSAPP_CLOUD_ACCESS_TOKEN=%s\nWHATSAPP_CLOUD_APP_SECRET=%s\nWHATSAPP_CLOUD_VERIFY_TOKEN=%s\nWHATSAPP_CLOUD_ALLOWED_USERS=%s\nWHATSAPP_CLOUD_HOME_CHANNEL=%s\nWHATSAPP_CLOUD_APP_ID=%s\nWHATSAPP_CLOUD_WEBHOOK_PORT=8090\nWHATSAPP_CLOUD_WEBHOOK_PATH=/whatsapp/webhook\n" \
             "$GROQ_API_KEY" "$GROQ_API_KEY" "$GROQ_API_KEY" "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" "$WHATSAPP_CLOUD_ACCESS_TOKEN" "$WHATSAPP_CLOUD_APP_SECRET" "$WHATSAPP_CLOUD_VERIFY_TOKEN" "$WHATSAPP_CLOUD_ALLOWED_USERS" "$WHATSAPP_CLOUD_HOME_CHANNEL" "$WHATSAPP_CLOUD_APP_ID" > ~/.hermes/.env
@@ -63,7 +101,6 @@ jobs:
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
           export PATH="$HOME/.local/bin:$PATH"
 
-          # Clear bundled skills index so the system prompt stays under Groq's 8K TPM per-request limit
           rm -rf ~/.hermes/skills/* ~/.hermes/hermes-agent/skills/* 2>/dev/null || true
           mkdir -p ~/.hermes/skills
 
@@ -80,7 +117,6 @@ jobs:
           with urllib.request.urlopen(req, timeout=15) as resp:
               models_data = json.loads(resp.read().decode())
           available = [m["id"] for m in models_data.get("data", [])]
-          print("Available Groq models:", available)
 
           preferred = [
               "openai/gpt-oss-120b",
@@ -123,19 +159,17 @@ jobs:
           cfg["gateway"]["platforms"].pop("whatsapp_agent_platform", None)
           cfg["gateway"]["platforms"]["whatsapp_cloud"] = {"enabled": True}
 
-          # Restrict toolsets so prompt stays <1,800 tokens (under Groq's 8,000 TPM limit)
-          cfg["toolsets"] = ["web", "memory", "todo"]
+          cfg["toolsets"] = ["terminal", "web", "memory", "todo"]
           cfg["platform_toolsets"] = {
-              "cli": ["web", "memory", "todo"],
-              "whatsapp": ["web", "memory", "todo"],
-              "whatsapp_cloud": ["web", "memory", "todo"],
+              "cli": ["terminal", "web", "memory", "todo"],
+              "whatsapp": ["terminal", "web", "memory", "todo"],
+              "whatsapp_cloud": ["terminal", "web", "memory", "todo"],
           }
 
           if not isinstance(cfg.get("agent"), dict):
               cfg["agent"] = {}
           cfg["agent"]["disabled_toolsets"] = [
               "browser",
-              "terminal",
               "file",
               "code_execution",
               "delegation",
@@ -169,20 +203,19 @@ jobs:
 
           with open(cfg_path, "w") as f:
               yaml.safe_dump(cfg, f, sort_keys=False)
-          print("Updated config.yaml successfully:")
-          with open(cfg_path, "r") as f:
-              print(f.read())
           PY
 
-          echo "Measuring prompt size after trimming toolsets & skills:"
-          hermes prompt-size || true
+          pa namaz || true
           pkill -f "hermes.*gateway" 2>/dev/null || true
 
-      - name: Run Hermes WhatsApp Cloud Gateway + Auto-Webhook (5h 30m cycle)
+      - name: Run Hermes WhatsApp Cloud Gateway + PA Scheduler (5h 30m cycle)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           pkill -f "hermes.*gateway" 2>/dev/null || true
           sleep 1
+
+          pa daemon > /tmp/pa-daemon.log 2>&1 &
+          PA_PID=$!
 
           cloudflared tunnel --url http://localhost:8090 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
           CF_PID=$!
@@ -235,7 +268,7 @@ jobs:
           ) &
 
           timeout 325m hermes gateway || true
-          kill $CF_PID 2>/dev/null || true
+          kill $CF_PID $PA_PID 2>/dev/null || true
 
       - name: Save Hermes Memory & State Cache
         if: always()
