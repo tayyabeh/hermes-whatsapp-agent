@@ -16,8 +16,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      WHATSAPP_AGENT_PLATFORM_API_KEY: ${{ secrets.WHATSAPP_AGENT_PLATFORM_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      WHATSAPP_CLOUD_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_CLOUD_PHONE_NUMBER_ID }}
+      WHATSAPP_CLOUD_ACCESS_TOKEN: ${{ secrets.WHATSAPP_CLOUD_ACCESS_TOKEN }}
+      WHATSAPP_CLOUD_APP_SECRET: ${{ secrets.WHATSAPP_CLOUD_APP_SECRET }}
+      WHATSAPP_CLOUD_VERIFY_TOKEN: ${{ secrets.WHATSAPP_CLOUD_VERIFY_TOKEN }}
+      WHATSAPP_CLOUD_ALLOWED_USERS: ${{ secrets.WHATSAPP_CLOUD_ALLOWED_USERS }}
+      WHATSAPP_CLOUD_HOME_CHANNEL: ${{ secrets.WHATSAPP_CLOUD_ALLOWED_USERS }}
+      WHATSAPP_CLOUD_APP_ID: ${{ secrets.WHATSAPP_CLOUD_APP_ID }}
+      WHATSAPP_CLOUD_WEBHOOK_PORT: "8090"
+      WHATSAPP_CLOUD_WEBHOOK_PATH: "/whatsapp/webhook"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,28 +43,42 @@ jobs:
           restore-keys: |
             hermes-state-
 
-      - name: Install & Configure Hermes Agent + WhatsApp Plugin
+      - name: Install & Configure Hermes Agent (WhatsApp Cloud API)
         run: |
-          sudo apt-get update && sudo apt-get install -y libatomic1 ffmpeg
+          sudo apt-get update && sudo apt-get install -y libatomic1 ffmpeg jq
+
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+
+          rm -rf ~/.hermes/platforms/whatsapp_agent_platform ~/.hermes/plugins/whatsapp-agent-platform ~/.hermes/plugins/whatsapp_agent_platform
           mkdir -p ~/.hermes
-          printf "WHATSAPP_AGENT_PLATFORM_API_KEY=%s\nGROQ_API_KEY=%s\n" \
-            "$WHATSAPP_AGENT_PLATFORM_API_KEY" "$GROQ_API_KEY" > ~/.hermes/.env
+
+          cat > ~/.hermes/.env <<EOF
+          GROQ_API_KEY=${GROQ_API_KEY}
+          WHATSAPP_CLOUD_PHONE_NUMBER_ID=${WHATSAPP_CLOUD_PHONE_NUMBER_ID}
+          WHATSAPP_CLOUD_ACCESS_TOKEN=${WHATSAPP_CLOUD_ACCESS_TOKEN}
+          WHATSAPP_CLOUD_APP_SECRET=${WHATSAPP_CLOUD_APP_SECRET}
+          WHATSAPP_CLOUD_VERIFY_TOKEN=${WHATSAPP_CLOUD_VERIFY_TOKEN}
+          WHATSAPP_CLOUD_ALLOWED_USERS=${WHATSAPP_CLOUD_ALLOWED_USERS}
+          WHATSAPP_CLOUD_HOME_CHANNEL=${WHATSAPP_CLOUD_HOME_CHANNEL}
+          WHATSAPP_CLOUD_APP_ID=${WHATSAPP_CLOUD_APP_ID}
+          WHATSAPP_CLOUD_WEBHOOK_PORT=8090
+          WHATSAPP_CLOUD_WEBHOOK_PATH=/whatsapp/webhook
+          EOF
           chmod 600 ~/.hermes/.env
-          echo "Checking secret lengths: WA=${#WHATSAPP_AGENT_PLATFORM_API_KEY}, GROQ=${#GROQ_API_KEY}"
-          if [ -z "$WHATSAPP_AGENT_PLATFORM_API_KEY" ]; then
-            echo "ERROR: WHATSAPP_AGENT_PLATFORM_API_KEY secret is EMPTY!"
-            exit 1
-          fi
-          if [ -z "$GROQ_API_KEY" ]; then
-            echo "ERROR: GROQ_API_KEY secret is EMPTY in GitHub Settings -> Secrets and variables -> Actions!"
+
+          echo "Checking secret lengths: PHONE_ID=${#WHATSAPP_CLOUD_PHONE_NUMBER_ID}, TOKEN=${#WHATSAPP_CLOUD_ACCESS_TOKEN}, GROQ=${#GROQ_API_KEY}"
+          if [ -z "$WHATSAPP_CLOUD_ACCESS_TOKEN" ] || [ -z "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" ]; then
+            echo "ERROR: WhatsApp Cloud API secrets are missing!"
             exit 1
           fi
 
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
           export PATH="$HOME/.local/bin:$PATH"
 
-          hermes plugins install whatsapp-agent-platform --yes-deps --enable || true
-          hermes plugins enable whatsapp-agent-platform || true
+          hermes plugins disable whatsapp-agent-platform 2>/dev/null || true
+          hermes plugins uninstall whatsapp-agent-platform 2>/dev/null || true
 
           python3 - << 'PY'
           import os, yaml
@@ -65,24 +87,22 @@ jobs:
           if os.path.exists(cfg_path):
               with open(cfg_path, "r") as f:
                   cfg = yaml.safe_load(f) or {}
-          cfg.setdefault("plugins", {})
-          enabled = cfg["plugins"].get("enabled") or []
-          for name in ["whatsapp-agent-platform", "whatsapp_agent_platform"]:
-              if name not in enabled:
-                  enabled.append(name)
-          cfg["plugins"]["enabled"] = enabled
+
+          cfg["plugins"] = {"enabled": []}
           cfg.setdefault("platforms", {})
-          cfg["platforms"].setdefault("whatsapp_agent_platform", {})["enabled"] = True
+          cfg["platforms"].pop("whatsapp_agent_platform", None)
+          cfg["platforms"].pop("whatsapp-agent-platform", None)
+          cfg["platforms"]["whatsapp_cloud"] = {"enabled": True}
+
+          cfg.setdefault("gateway", {}).setdefault("platforms", {})
+          cfg["gateway"]["platforms"].pop("whatsapp_agent_platform", None)
+          cfg["gateway"]["platforms"]["whatsapp_cloud"] = {"enabled": True}
+
           cfg.setdefault("model", {})
           cfg["model"]["provider"] = "groq"
           cfg["model"]["default"] = "llama-3.3-70b-versatile"
-          cfg.setdefault("display", {}).setdefault("platforms", {}).setdefault("whatsapp_agent_platform", {}).update({
-              "tool_progress": "off",
-              "interim_assistant_messages": False,
-              "long_running_notifications": False,
-              "busy_ack_detail": False,
-          })
           cfg.setdefault("stt", {})["echo_transcripts"] = False
+
           with open(cfg_path, "w") as f:
               yaml.safe_dump(cfg, f, sort_keys=False)
           print("Updated config.yaml successfully:")
@@ -90,12 +110,58 @@ jobs:
               print(f.read())
           PY
 
-          hermes plugins list
-
-      - name: Run Hermes WhatsApp Gateway (5h 30m cycle)
+      - name: Run Hermes WhatsApp Cloud Gateway + Auto-Webhook (5h 30m cycle)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-          timeout 330m hermes gateway || true
+
+          cloudflared tunnel --url http://localhost:8090 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
+          CF_PID=$!
+
+          TUNNEL_URL=""
+          for i in $(seq 1 30); do
+            TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n 1 || true)
+            if [ -n "$TUNNEL_URL" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "ERROR: Failed to obtain Cloudflare tunnel URL"
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+          echo "Cloudflare Tunnel ready: $TUNNEL_URL"
+
+          hermes gateway > /tmp/hermes.log 2>&1 &
+          HERMES_PID=$!
+
+          echo "Waiting for Hermes webhook listener on :8090..."
+          for i in $(seq 1 45); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8090/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}&hub.challenge=ready" || true)
+            if [ "$CODE" = "200" ]; then
+              echo "Hermes webhook listener is UP (HTTP 200)!"
+              break
+            fi
+            sleep 2
+          done
+
+          cat /tmp/hermes.log || true
+
+          echo "Registering Meta Webhook callback URL -> ${TUNNEL_URL}/whatsapp/webhook"
+          SUB_RESP=$(curl -sS -X POST "https://graph.facebook.com/v23.0/${WHATSAPP_CLOUD_APP_ID}/subscriptions" \
+            -d "object=whatsapp_business_account" \
+            -d "callback_url=${TUNNEL_URL}/whatsapp/webhook" \
+            -d "verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}" \
+            -d "fields=messages" \
+            -d "access_token=${WHATSAPP_CLOUD_APP_ID}|${WHATSAPP_CLOUD_APP_SECRET}")
+          echo "Meta subscription response: $SUB_RESP"
+
+          tail -n +1 -f /tmp/hermes.log &
+          TAIL_PID=$!
+
+          timeout 325m wait $HERMES_PID || true
+          kill $HERMES_PID $CF_PID $TAIL_PID 2>/dev/null || true
 
       - name: Save Hermes Memory & State Cache
         if: always()
