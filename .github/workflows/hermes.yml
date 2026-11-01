@@ -73,7 +73,31 @@ jobs:
           hermes plugins install groq-provider --yes-deps --enable || true
 
           python3 - << 'PY'
-          import os, yaml
+          import os, json, urllib.request, yaml
+
+          groq_key = os.environ["GROQ_API_KEY"]
+          req = urllib.request.Request(
+              "https://api.groq.com/openai/v1/models",
+              headers={"Authorization": f"Bearer {groq_key}", "User-Agent": "hermes-setup/1.0"},
+          )
+          with urllib.request.urlopen(req, timeout=15) as resp:
+              models_data = json.loads(resp.read().decode())
+          available = [m["id"] for m in models_data.get("data", [])]
+          print("Available Groq models:", available)
+
+          preferred = [
+              "qwen/qwen3.8-27b",
+              "openai/gpt-oss-120b",
+              "openai/gpt-oss-20b",
+              "llama-3.3-70b-versatile",
+              "llama-3.1-8b-instant",
+          ]
+          chosen_model = next((m for m in preferred if m in available), None)
+          if not chosen_model:
+              chat_models = [m for m in available if "whisper" not in m and "guard" not in m and "tts" not in m]
+              chosen_model = chat_models[0]
+          print("Selected Groq model:", chosen_model)
+
           cfg_path = os.path.expanduser("~/.hermes/config.yaml")
           cfg = {}
           if os.path.exists(cfg_path):
@@ -104,7 +128,7 @@ jobs:
 
           cfg["model"] = {
               "provider": "custom:groq",
-              "default": "llama-3.3-70b-versatile",
+              "default": chosen_model,
               "base_url": "https://api.groq.com/openai/v1",
           }
 
@@ -120,12 +144,13 @@ jobs:
               print(f.read())
           PY
 
-          echo "Testing Groq LLM connection via Hermes CLI..."
-          hermes chat -q "Reply with one word: READY" || true
+          pkill -f "hermes.*gateway" 2>/dev/null || true
 
       - name: Run Hermes WhatsApp Cloud Gateway + Auto-Webhook (5h 30m cycle)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          pkill -f "hermes.*gateway" 2>/dev/null || true
+          sleep 1
 
           cloudflared tunnel --url http://localhost:8090 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
           CF_PID=$!
@@ -157,14 +182,24 @@ jobs:
               sleep 2
             done
 
-            echo "Registering Meta Webhook callback URL -> ${TUNNEL_URL}/whatsapp/webhook"
-            SUB_RESP=$(curl -sS -X POST "https://graph.facebook.com/v23.0/${WHATSAPP_CLOUD_APP_ID}/subscriptions" \
-              -d "object=whatsapp_business_account" \
-              -d "callback_url=${TUNNEL_URL}/whatsapp/webhook" \
-              -d "verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}" \
-              -d "fields=messages" \
-              -d "access_token=${WHATSAPP_CLOUD_APP_ID}|${WHATSAPP_CLOUD_APP_SECRET}")
-            echo "Meta subscription response: $SUB_RESP"
+            echo "Waiting 6s for Cloudflare DNS propagation..."
+            sleep 6
+
+            for attempt in $(seq 1 6); do
+              echo "Registering Meta Webhook callback URL (attempt $attempt) -> ${TUNNEL_URL}/whatsapp/webhook"
+              SUB_RESP=$(curl -sS -X POST "https://graph.facebook.com/v23.0/${WHATSAPP_CLOUD_APP_ID}/subscriptions" \
+                -d "object=whatsapp_business_account" \
+                -d "callback_url=${TUNNEL_URL}/whatsapp/webhook" \
+                -d "verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}" \
+                -d "fields=messages" \
+                -d "access_token=${WHATSAPP_CLOUD_APP_ID}|${WHATSAPP_CLOUD_APP_SECRET}" || true)
+              echo "Meta subscription response: $SUB_RESP"
+              if echo "$SUB_RESP" | grep -q '"success":true'; then
+                echo "Meta Webhook registered successfully!"
+                break
+              fi
+              sleep 5
+            done
           ) &
 
           timeout 325m hermes gateway || true
