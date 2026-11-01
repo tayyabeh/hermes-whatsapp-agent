@@ -54,18 +54,8 @@ jobs:
           rm -rf ~/.hermes/platforms/whatsapp_agent_platform ~/.hermes/plugins/whatsapp-agent-platform ~/.hermes/plugins/whatsapp_agent_platform
           mkdir -p ~/.hermes
 
-          cat > ~/.hermes/.env <<EOF
-          GROQ_API_KEY=${GROQ_API_KEY}
-          WHATSAPP_CLOUD_PHONE_NUMBER_ID=${WHATSAPP_CLOUD_PHONE_NUMBER_ID}
-          WHATSAPP_CLOUD_ACCESS_TOKEN=${WHATSAPP_CLOUD_ACCESS_TOKEN}
-          WHATSAPP_CLOUD_APP_SECRET=${WHATSAPP_CLOUD_APP_SECRET}
-          WHATSAPP_CLOUD_VERIFY_TOKEN=${WHATSAPP_CLOUD_VERIFY_TOKEN}
-          WHATSAPP_CLOUD_ALLOWED_USERS=${WHATSAPP_CLOUD_ALLOWED_USERS}
-          WHATSAPP_CLOUD_HOME_CHANNEL=${WHATSAPP_CLOUD_HOME_CHANNEL}
-          WHATSAPP_CLOUD_APP_ID=${WHATSAPP_CLOUD_APP_ID}
-          WHATSAPP_CLOUD_WEBHOOK_PORT=8090
-          WHATSAPP_CLOUD_WEBHOOK_PATH=/whatsapp/webhook
-          EOF
+          printf "GROQ_API_KEY=%s\nWHATSAPP_CLOUD_PHONE_NUMBER_ID=%s\nWHATSAPP_CLOUD_ACCESS_TOKEN=%s\nWHATSAPP_CLOUD_APP_SECRET=%s\nWHATSAPP_CLOUD_VERIFY_TOKEN=%s\nWHATSAPP_CLOUD_ALLOWED_USERS=%s\nWHATSAPP_CLOUD_HOME_CHANNEL=%s\nWHATSAPP_CLOUD_APP_ID=%s\nWHATSAPP_CLOUD_WEBHOOK_PORT=8090\nWHATSAPP_CLOUD_WEBHOOK_PATH=/whatsapp/webhook\n" \
+            "$GROQ_API_KEY" "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" "$WHATSAPP_CLOUD_ACCESS_TOKEN" "$WHATSAPP_CLOUD_APP_SECRET" "$WHATSAPP_CLOUD_VERIFY_TOKEN" "$WHATSAPP_CLOUD_ALLOWED_USERS" "$WHATSAPP_CLOUD_HOME_CHANNEL" "$WHATSAPP_CLOUD_APP_ID" > ~/.hermes/.env
           chmod 600 ~/.hermes/.env
 
           echo "Checking secret lengths: PHONE_ID=${#WHATSAPP_CLOUD_PHONE_NUMBER_ID}, TOKEN=${#WHATSAPP_CLOUD_ACCESS_TOKEN}, GROQ=${#GROQ_API_KEY}"
@@ -77,9 +67,6 @@ jobs:
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
           export PATH="$HOME/.local/bin:$PATH"
 
-          hermes plugins disable whatsapp-agent-platform 2>/dev/null || true
-          hermes plugins uninstall whatsapp-agent-platform 2>/dev/null || true
-
           python3 - << 'PY'
           import os, yaml
           cfg_path = os.path.expanduser("~/.hermes/config.yaml")
@@ -89,19 +76,27 @@ jobs:
                   cfg = yaml.safe_load(f) or {}
 
           cfg["plugins"] = {"enabled": []}
-          cfg.setdefault("platforms", {})
+          if not isinstance(cfg.get("platforms"), dict):
+              cfg["platforms"] = {}
           cfg["platforms"].pop("whatsapp_agent_platform", None)
           cfg["platforms"].pop("whatsapp-agent-platform", None)
           cfg["platforms"]["whatsapp_cloud"] = {"enabled": True}
 
-          cfg.setdefault("gateway", {}).setdefault("platforms", {})
+          if not isinstance(cfg.get("gateway"), dict):
+              cfg["gateway"] = {}
+          if not isinstance(cfg["gateway"].get("platforms"), dict):
+              cfg["gateway"]["platforms"] = {}
           cfg["gateway"]["platforms"].pop("whatsapp_agent_platform", None)
           cfg["gateway"]["platforms"]["whatsapp_cloud"] = {"enabled": True}
 
-          cfg.setdefault("model", {})
+          if not isinstance(cfg.get("model"), dict):
+              cfg["model"] = {}
           cfg["model"]["provider"] = "groq"
           cfg["model"]["default"] = "llama-3.3-70b-versatile"
-          cfg.setdefault("stt", {})["echo_transcripts"] = False
+
+          if not isinstance(cfg.get("stt"), dict):
+              cfg["stt"] = {}
+          cfg["stt"]["echo_transcripts"] = False
 
           with open(cfg_path, "w") as f:
               yaml.safe_dump(cfg, f, sort_keys=False)
