@@ -128,35 +128,29 @@ jobs:
           fi
           echo "Cloudflare Tunnel ready: $TUNNEL_URL"
 
-          hermes gateway > /tmp/hermes.log 2>&1 &
-          HERMES_PID=$!
+          (
+            echo "Waiting for Hermes webhook listener on :8090..."
+            for i in $(seq 1 60); do
+              CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8090/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}&hub.challenge=ready" || true)
+              if [ "$CODE" = "200" ]; then
+                echo "Hermes webhook listener is UP (HTTP 200)!"
+                break
+              fi
+              sleep 2
+            done
 
-          echo "Waiting for Hermes webhook listener on :8090..."
-          for i in $(seq 1 45); do
-            CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8090/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}&hub.challenge=ready" || true)
-            if [ "$CODE" = "200" ]; then
-              echo "Hermes webhook listener is UP (HTTP 200)!"
-              break
-            fi
-            sleep 2
-          done
+            echo "Registering Meta Webhook callback URL -> ${TUNNEL_URL}/whatsapp/webhook"
+            SUB_RESP=$(curl -sS -X POST "https://graph.facebook.com/v23.0/${WHATSAPP_CLOUD_APP_ID}/subscriptions" \
+              -d "object=whatsapp_business_account" \
+              -d "callback_url=${TUNNEL_URL}/whatsapp/webhook" \
+              -d "verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}" \
+              -d "fields=messages" \
+              -d "access_token=${WHATSAPP_CLOUD_APP_ID}|${WHATSAPP_CLOUD_APP_SECRET}")
+            echo "Meta subscription response: $SUB_RESP"
+          ) &
 
-          cat /tmp/hermes.log || true
-
-          echo "Registering Meta Webhook callback URL -> ${TUNNEL_URL}/whatsapp/webhook"
-          SUB_RESP=$(curl -sS -X POST "https://graph.facebook.com/v23.0/${WHATSAPP_CLOUD_APP_ID}/subscriptions" \
-            -d "object=whatsapp_business_account" \
-            -d "callback_url=${TUNNEL_URL}/whatsapp/webhook" \
-            -d "verify_token=${WHATSAPP_CLOUD_VERIFY_TOKEN}" \
-            -d "fields=messages" \
-            -d "access_token=${WHATSAPP_CLOUD_APP_ID}|${WHATSAPP_CLOUD_APP_SECRET}")
-          echo "Meta subscription response: $SUB_RESP"
-
-          tail -n +1 -f /tmp/hermes.log &
-          TAIL_PID=$!
-
-          timeout 325m wait $HERMES_PID || true
-          kill $HERMES_PID $CF_PID $TAIL_PID 2>/dev/null || true
+          timeout 325m hermes gateway || true
+          kill $CF_PID 2>/dev/null || true
 
       - name: Save Hermes Memory & State Cache
         if: always()
