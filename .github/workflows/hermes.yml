@@ -39,14 +39,13 @@ jobs:
         with:
           path: |
             ~/.hermes/memories
-            ~/.hermes/skills
             ~/.hermes/platforms
             ~/.hermes/state.db
           key: hermes-state-${{ github.run_id }}
           restore-keys: |
             hermes-state-
 
-      - name: Install & Configure Hermes Agent (WhatsApp Cloud API + Groq)
+      - name: Install & Configure Hermes Agent (WhatsApp Cloud API + Lean Groq)
         run: |
           sudo apt-get update && sudo apt-get install -y libatomic1 ffmpeg jq
 
@@ -61,14 +60,12 @@ jobs:
             "$GROQ_API_KEY" "$GROQ_API_KEY" "$GROQ_API_KEY" "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" "$WHATSAPP_CLOUD_ACCESS_TOKEN" "$WHATSAPP_CLOUD_APP_SECRET" "$WHATSAPP_CLOUD_VERIFY_TOKEN" "$WHATSAPP_CLOUD_ALLOWED_USERS" "$WHATSAPP_CLOUD_HOME_CHANNEL" "$WHATSAPP_CLOUD_APP_ID" > ~/.hermes/.env
           chmod 600 ~/.hermes/.env
 
-          echo "Checking secret lengths: PHONE_ID=${#WHATSAPP_CLOUD_PHONE_NUMBER_ID}, TOKEN=${#WHATSAPP_CLOUD_ACCESS_TOKEN}, GROQ=${#GROQ_API_KEY}"
-          if [ -z "$WHATSAPP_CLOUD_ACCESS_TOKEN" ] || [ -z "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" ] || [ -z "$GROQ_API_KEY" ]; then
-            echo "ERROR: Required secrets are missing!"
-            exit 1
-          fi
-
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
           export PATH="$HOME/.local/bin:$PATH"
+
+          # Clear bundled skills index so the system prompt stays under Groq's 8K TPM per-request limit
+          rm -rf ~/.hermes/skills/* ~/.hermes/hermes-agent/skills/* 2>/dev/null || true
+          mkdir -p ~/.hermes/skills
 
           hermes plugins install groq-provider --yes-deps --enable || true
 
@@ -86,8 +83,8 @@ jobs:
           print("Available Groq models:", available)
 
           preferred = [
-              "qwen/qwen3.8-27b",
               "openai/gpt-oss-120b",
+              "qwen/qwen3.8-27b",
               "openai/gpt-oss-20b",
               "llama-3.3-70b-versatile",
               "llama-3.1-8b-instant",
@@ -126,11 +123,44 @@ jobs:
           cfg["gateway"]["platforms"].pop("whatsapp_agent_platform", None)
           cfg["gateway"]["platforms"]["whatsapp_cloud"] = {"enabled": True}
 
+          # Restrict toolsets so prompt stays <1,800 tokens (under Groq's 8,000 TPM limit)
+          cfg["toolsets"] = ["web", "memory", "todo"]
+          cfg["platform_toolsets"] = {
+              "cli": ["web", "memory", "todo"],
+              "whatsapp": ["web", "memory", "todo"],
+              "whatsapp_cloud": ["web", "memory", "todo"],
+          }
+
+          if not isinstance(cfg.get("agent"), dict):
+              cfg["agent"] = {}
+          cfg["agent"]["disabled_toolsets"] = [
+              "browser",
+              "terminal",
+              "file",
+              "code_execution",
+              "delegation",
+              "skills",
+              "image_gen",
+              "vision",
+              "tts",
+              "cronjob",
+              "session_search",
+              "clarify",
+              "homeassistant",
+              "rl",
+              "moa",
+          ]
+
           cfg["model"] = {
               "provider": "custom:groq",
               "default": chosen_model,
               "base_url": "https://api.groq.com/openai/v1",
           }
+
+          if not isinstance(cfg.get("compression"), dict):
+              cfg["compression"] = {}
+          cfg["compression"]["enabled"] = True
+          cfg["compression"]["threshold_tokens"] = 4500
 
           if not isinstance(cfg.get("stt"), dict):
               cfg["stt"] = {}
@@ -144,6 +174,8 @@ jobs:
               print(f.read())
           PY
 
+          echo "Measuring prompt size after trimming toolsets & skills:"
+          hermes prompt-size || true
           pkill -f "hermes.*gateway" 2>/dev/null || true
 
       - name: Run Hermes WhatsApp Cloud Gateway + Auto-Webhook (5h 30m cycle)
@@ -211,8 +243,6 @@ jobs:
         with:
           path: |
             ~/.hermes/memories
-            ~/.hermes/skills
-            ~/.hermes/sessions
             ~/.hermes/platforms
             ~/.hermes/state.db
           key: hermes-state-${{ github.run_id }}
