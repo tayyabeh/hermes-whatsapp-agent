@@ -17,6 +17,10 @@ jobs:
     timeout-minutes: 350
     env:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      CUSTOM_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_BASE_URL: "https://api.groq.com/openai/v1"
+      CUSTOM_BASE_URL: "https://api.groq.com/openai/v1"
       WHATSAPP_CLOUD_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_CLOUD_PHONE_NUMBER_ID }}
       WHATSAPP_CLOUD_ACCESS_TOKEN: ${{ secrets.WHATSAPP_CLOUD_ACCESS_TOKEN }}
       WHATSAPP_CLOUD_APP_SECRET: ${{ secrets.WHATSAPP_CLOUD_APP_SECRET }}
@@ -36,14 +40,13 @@ jobs:
           path: |
             ~/.hermes/memories
             ~/.hermes/skills
-            ~/.hermes/sessions
             ~/.hermes/platforms
             ~/.hermes/state.db
           key: hermes-state-${{ github.run_id }}
           restore-keys: |
             hermes-state-
 
-      - name: Install & Configure Hermes Agent (WhatsApp Cloud API)
+      - name: Install & Configure Hermes Agent (WhatsApp Cloud API + Groq)
         run: |
           sudo apt-get update && sudo apt-get install -y libatomic1 ffmpeg jq
 
@@ -51,21 +54,23 @@ jobs:
           chmod +x /tmp/cloudflared
           sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
 
-          rm -rf ~/.hermes/platforms/whatsapp_agent_platform ~/.hermes/plugins/whatsapp-agent-platform ~/.hermes/plugins/whatsapp_agent_platform
+          rm -rf ~/.hermes/platforms/whatsapp_agent_platform ~/.hermes/plugins/whatsapp-agent-platform ~/.hermes/plugins/whatsapp_agent_platform ~/.hermes/sessions
           mkdir -p ~/.hermes
 
-          printf "GROQ_API_KEY=%s\nWHATSAPP_CLOUD_PHONE_NUMBER_ID=%s\nWHATSAPP_CLOUD_ACCESS_TOKEN=%s\nWHATSAPP_CLOUD_APP_SECRET=%s\nWHATSAPP_CLOUD_VERIFY_TOKEN=%s\nWHATSAPP_CLOUD_ALLOWED_USERS=%s\nWHATSAPP_CLOUD_HOME_CHANNEL=%s\nWHATSAPP_CLOUD_APP_ID=%s\nWHATSAPP_CLOUD_WEBHOOK_PORT=8090\nWHATSAPP_CLOUD_WEBHOOK_PATH=/whatsapp/webhook\n" \
-            "$GROQ_API_KEY" "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" "$WHATSAPP_CLOUD_ACCESS_TOKEN" "$WHATSAPP_CLOUD_APP_SECRET" "$WHATSAPP_CLOUD_VERIFY_TOKEN" "$WHATSAPP_CLOUD_ALLOWED_USERS" "$WHATSAPP_CLOUD_HOME_CHANNEL" "$WHATSAPP_CLOUD_APP_ID" > ~/.hermes/.env
+          printf "GROQ_API_KEY=%s\nOPENAI_API_KEY=%s\nCUSTOM_API_KEY=%s\nOPENAI_BASE_URL=https://api.groq.com/openai/v1\nCUSTOM_BASE_URL=https://api.groq.com/openai/v1\nWHATSAPP_CLOUD_PHONE_NUMBER_ID=%s\nWHATSAPP_CLOUD_ACCESS_TOKEN=%s\nWHATSAPP_CLOUD_APP_SECRET=%s\nWHATSAPP_CLOUD_VERIFY_TOKEN=%s\nWHATSAPP_CLOUD_ALLOWED_USERS=%s\nWHATSAPP_CLOUD_HOME_CHANNEL=%s\nWHATSAPP_CLOUD_APP_ID=%s\nWHATSAPP_CLOUD_WEBHOOK_PORT=8090\nWHATSAPP_CLOUD_WEBHOOK_PATH=/whatsapp/webhook\n" \
+            "$GROQ_API_KEY" "$GROQ_API_KEY" "$GROQ_API_KEY" "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" "$WHATSAPP_CLOUD_ACCESS_TOKEN" "$WHATSAPP_CLOUD_APP_SECRET" "$WHATSAPP_CLOUD_VERIFY_TOKEN" "$WHATSAPP_CLOUD_ALLOWED_USERS" "$WHATSAPP_CLOUD_HOME_CHANNEL" "$WHATSAPP_CLOUD_APP_ID" > ~/.hermes/.env
           chmod 600 ~/.hermes/.env
 
           echo "Checking secret lengths: PHONE_ID=${#WHATSAPP_CLOUD_PHONE_NUMBER_ID}, TOKEN=${#WHATSAPP_CLOUD_ACCESS_TOKEN}, GROQ=${#GROQ_API_KEY}"
-          if [ -z "$WHATSAPP_CLOUD_ACCESS_TOKEN" ] || [ -z "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" ]; then
-            echo "ERROR: WhatsApp Cloud API secrets are missing!"
+          if [ -z "$WHATSAPP_CLOUD_ACCESS_TOKEN" ] || [ -z "$WHATSAPP_CLOUD_PHONE_NUMBER_ID" ] || [ -z "$GROQ_API_KEY" ]; then
+            echo "ERROR: Required secrets are missing!"
             exit 1
           fi
 
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
           export PATH="$HOME/.local/bin:$PATH"
+
+          hermes plugins install groq-provider --yes-deps --enable || true
 
           python3 - << 'PY'
           import os, yaml
@@ -75,7 +80,15 @@ jobs:
               with open(cfg_path, "r") as f:
                   cfg = yaml.safe_load(f) or {}
 
-          cfg["plugins"] = {"enabled": []}
+          cfg["plugins"] = {"enabled": ["groq-provider"]}
+
+          if not isinstance(cfg.get("providers"), dict):
+              cfg["providers"] = {}
+          cfg["providers"]["groq"] = {
+              "api": "https://api.groq.com/openai/v1",
+              "key_env": "GROQ_API_KEY",
+          }
+
           if not isinstance(cfg.get("platforms"), dict):
               cfg["platforms"] = {}
           cfg["platforms"].pop("whatsapp_agent_platform", None)
@@ -89,13 +102,15 @@ jobs:
           cfg["gateway"]["platforms"].pop("whatsapp_agent_platform", None)
           cfg["gateway"]["platforms"]["whatsapp_cloud"] = {"enabled": True}
 
-          if not isinstance(cfg.get("model"), dict):
-              cfg["model"] = {}
-          cfg["model"]["provider"] = "groq"
-          cfg["model"]["default"] = "llama-3.3-70b-versatile"
+          cfg["model"] = {
+              "provider": "custom:groq",
+              "default": "llama-3.3-70b-versatile",
+              "base_url": "https://api.groq.com/openai/v1",
+          }
 
           if not isinstance(cfg.get("stt"), dict):
               cfg["stt"] = {}
+          cfg["stt"]["provider"] = "groq"
           cfg["stt"]["echo_transcripts"] = False
 
           with open(cfg_path, "w") as f:
@@ -104,6 +119,9 @@ jobs:
           with open(cfg_path, "r") as f:
               print(f.read())
           PY
+
+          echo "Testing Groq LLM connection via Hermes CLI..."
+          hermes chat -q "Reply with one word: READY" || true
 
       - name: Run Hermes WhatsApp Cloud Gateway + Auto-Webhook (5h 30m cycle)
         run: |
